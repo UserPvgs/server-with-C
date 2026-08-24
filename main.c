@@ -2,33 +2,15 @@
 #include <winsock2.h>
 #include <string.h>
 #include <stdbool.h>
-
-#pragma comment(lib, "ws2_32.lib")
+#include "server.h"
+#include "http.h"
+#include "client.h"
 
 const int PORT = 8000;
 
-typedef struct
-{
-    char method[16];
-    char path[256];
-
-    char host[256];
-} HttpRequest;
-
-bool invalidSocket(SOCKET serverFd);
-bool startListen(SOCKET serverFd, int backlog);
-int bindSocketFn(SOCKET serverFd, struct sockaddr_in address);
-
-HttpRequest parseRequest(char* buffer);
-
-const char* homeResponse();
-const char* usersResponse();
-const char* notFoundResponse();
-
-const char* routeRequest(HttpRequest request);
-
 int main()
 {
+    Client* client = malloc(sizeof(Client) * 4);
     struct sockaddr_in address = {0};
     WSADATA wsaData;
 
@@ -58,7 +40,82 @@ int main()
 
     printf("Servidor iniciado na porta %d\n", PORT);
 
-    while (1)
+    receiveConnection(serverFd, address, client);
+
+    closesocket(serverFd);
+    WSACleanup();
+
+    return 0;
+}
+
+Commands CommandOfString(char buffer[8192])
+{
+    char command[32];
+
+    sscanf(buffer, "%31s", command);
+
+    if (strcmp(command, "LOGIN") == 0)
+        return LOGIN;
+
+    if (strcmp(command, "MESSAGE") == 0)
+        return MESSAGE;
+
+    if (strcmp(command, "BYE") == 0)
+        return BYE;
+
+    if (strcmp(command, "LIST") == 0)
+        return LIST;
+    return UNKNOWN;
+}
+
+void broadcast(Client* clients, Client* sender, const char* message)
+{
+    for(int i = 0; i < sizeof(clients); i++){
+        if(clients[i].connect == true){
+            send(clients[i].clientSocket, message, strlen(message), 0);
+        }
+    }
+}
+
+CommandsAndArguments parseCommand(char buffer[8192], SOCKET clientFd, Client* client)
+{
+    Commands command = CommandOfString(buffer);
+    switch (command)
+    {
+    case LOGIN:
+    {
+            //char* message = (char *) malloc(strlen(strchr(buffer, ' ') + 1) + 1);
+            client->clientSocket = clientFd;
+            client->connect = true;
+            char* argument = strchr(buffer, ' ') + 1;
+            strncpy(client->name,argument,sizeof(client->name) - 1);
+            client->name[sizeof(client->name) - 1] = '\0';
+        break;
+    }
+    case MESSAGE:
+    {
+        char* message = (char *) malloc(strlen(strchr(buffer, ' ') + 1) + 1);
+        broadcast(client, clientFd, message);
+        break;
+    }
+    case BYE:
+        free(client);
+        break;
+    case LIST:
+        /* code */
+        break;
+    case UNKNOWN:
+        /* code */
+        break;
+    default:
+        break;
+    }
+}
+
+int receiveConnection(SOCKET serverFd, struct sockaddr_in address, Client* client)
+{
+    char buffer[8192];
+    while(1)
     {
         int addressLength = sizeof(address);
 
@@ -70,17 +127,9 @@ int main()
 
         if (clientFd == INVALID_SOCKET)
         {
-            printf(
-                "Erro no accept -> %d\n",
-                WSAGetLastError()
-            );
+            printf("Erro no accept -> %d\n",WSAGetLastError());
             continue;
         }
-
-        printf("\nCliente conectado!\n");
-
-        char buffer[8192];
-
         int bytesReceived = recv(
             clientFd,
             buffer,
@@ -95,138 +144,7 @@ int main()
         }
 
         buffer[bytesReceived] = '\0';
-
-        printf("\nREQUISIÇÃO RECEBIDA:\n");
         printf("%s\n", buffer);
-
-        HttpRequest request = parseRequest(buffer);
-
-        printf("\nMétodo: %s\n", request.method);
-        printf("Path: %s\n", request.path);
-
-        const char* response =
-            routeRequest(request);
-
-        send(
-            clientFd,
-            response,
-            strlen(response),
-            0
-        );
-
-        closesocket(clientFd);
+        CommandsAndArguments commandsAndArguments = parseCommand(buffer, clientFd, client);
     }
-
-    closesocket(serverFd);
-    WSACleanup();
-
-    return 0;
-}
-
-bool invalidSocket(SOCKET serverFd)
-{
-    if (serverFd == INVALID_SOCKET)
-    {
-        printf(
-            "Erro ao criar socket -> %d\n",
-            WSAGetLastError()
-        );
-
-        return true;
-    }
-
-    return false;
-}
-
-int bindSocketFn(
-    SOCKET serverFd,
-    struct sockaddr_in address
-)
-{
-    return bind(
-        serverFd,
-        (struct sockaddr*)&address,
-        sizeof(address)
-    );
-}
-
-bool startListen(
-    SOCKET serverFd,
-    int backlog
-)
-{
-    if (listen(serverFd, backlog) != 0)
-    {
-        printf(
-            "Erro listen -> %d\n",
-            WSAGetLastError()
-        );
-
-        return false;
-    }
-
-    return true;
-}
-
-HttpRequest parseRequest(char* buffer)
-{
-    HttpRequest request;
-
-    memset(&request, 0, sizeof(request));
-
-    sscanf(
-        buffer,
-        "%15s %255s",
-        request.method,
-        request.path
-    );
-
-    return request;
-}
-const char* routeRequest(HttpRequest request)
-{
-    if (
-        strcmp(request.method, "GET") == 0 &&
-        strcmp(request.path, "/") == 0
-    )
-    {
-        return homeResponse();
-    }
-
-    if (
-        strcmp(request.method, "GET") == 0 &&
-        strcmp(request.path, "/usuarios") == 0
-    )
-    {
-        return usersResponse();
-    }
-
-    return notFoundResponse();
-}
-
-const char* homeResponse()
-{
-    return
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        "\r\n"
-        "<h1>Home</h1>";
-}
-
-const char* usersResponse()
-{
-    return
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        "\r\n"
-        "<h1>Usuarios</h1>";
-}
-
-const char* notFoundResponse()
-{
-    return
-        "HTTP/1.1 404 Not Found\r\n"
-        "Content-Type: text/html\r\n"
-        "\r\n"
-        "<h1>404 - Pagina nao encontrada</h1>";
 }

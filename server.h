@@ -9,6 +9,10 @@ typedef enum {
     LIST,
     UNKNOWN
 } Commands;
+typedef struct {
+    char sender[120];
+    char content[512];
+} Message;
 typedef struct 
 {
     Commands command;

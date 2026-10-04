@@ -42,8 +42,7 @@ void broadcast(Client* clients, SOCKET sender, const char* message)
 void accessChat(char buffer[8192], SOCKET clientFd, Client* client)
 {
     for(int i = 0; i < MAX_CLIENTS; i++){
-        if(client[i].connect == false){
-            client[i].clientSocket = clientFd;
+        if(client[i].connect == false && client[i].clientSocket == clientFd){
             client[i].connect = true;
             char* argument = strchr(buffer, ' ') + 1;
             strncpy(client[i].name,argument,sizeof(client[i].name) - 1);
@@ -133,40 +132,66 @@ CommandsAndArguments parseCommand(char buffer[8192], SOCKET clientFd, Client* cl
     }
 }
 
-int receiveConnection(SOCKET serverFd, struct sockaddr_in address, Client* client, Message* messageSender)
+int receiveConnection(SOCKET serverFd, struct sockaddr_in address, Client* client, Message* messageSender, fd_set readFds)
 {
+    SOCKET clientFd;
     char buffer[8192];
     while(1)
     {
         int addressLength = sizeof(address);
-
-        SOCKET clientFd = accept(
+        FD_ZERO(&readFds);
+        FD_SET(serverFd, &readFds);
+        //int serverSelect = select(0, &readFds, NULL, NULL, NULL);
+        for(int i = 0; i < MAX_CLIENTS; i++){
+            if(client[i].connect == true){
+                FD_SET(client[i].clientSocket, &readFds);
+            }
+        }
+        int resultSelect = select(0, &readFds, NULL, NULL, NULL);
+        if(resultSelect == SOCKET_ERROR){
+            printf("Erro no select -> %d\n", WSAGetLastError());
+            break;
+        }
+        if(FD_ISSET(serverFd, &readFds)){
+            clientFd = accept(
             serverFd,
             (struct sockaddr*)&address,
             &addressLength
-        );
-
-        if (clientFd == INVALID_SOCKET)
-        {
-            printf("Erro no accept -> %d\n",WSAGetLastError());
-            continue;
+            );
+            if (clientFd == INVALID_SOCKET)
+            {
+                printf("Erro no accept -> %d\n",WSAGetLastError());
+                continue;
+            }
         }
-        int bytesReceived = recv(
-            clientFd,
-            buffer,
-            sizeof(buffer) - 1,
-            0
-        );
-
-        if (bytesReceived <= 0)
-        {
-            closesocket(clientFd);
-            continue;
+        if(findClient(client, clientFd) == NULL){
+            for(int i = 0; i < MAX_CLIENTS; i++){
+                if(client[i].clientSocket == INVALID_SOCKET){
+                    client[i].clientSocket = clientFd;
+                    break;
+                }
+            }
         }
+        for(int i = 0; i < MAX_CLIENTS; i++){
+            if(FD_ISSET(client[i].clientSocket, &readFds)){
+                int bytesReceived = recv(
+                client[i].clientSocket,
+                buffer,
+                sizeof(buffer) - 1,
+                0
+                );
 
-        buffer[bytesReceived] = '\0';
-        printf("%s\n", buffer);
-        CommandsAndArguments commandsAndArguments = parseCommand(buffer, clientFd, client, messageSender);
+                if (bytesReceived <= 0)
+                {
+                    closesocket(client[i].clientSocket);
+                    continue;
+                }
+                //Recv nesse estado impede a assincronicidade, adicionar multiplexação
+                buffer[bytesReceived] = '\0';
+                printf("%s\n", buffer);
+                CommandsAndArguments commandsAndArguments = parseCommand(buffer, client[i].clientSocket, client, messageSender);
+            }
+        }
     }
 }
 
@@ -174,6 +199,7 @@ int main()
 {
     Client* client = malloc(sizeof(Client) * MAX_CLIENTS);
     Message* messageSender = malloc(sizeof(Message) * MAX_MESSAGES);
+    fd_set readFds;
     struct sockaddr_in address = {0};
     WSADATA wsaData;
 
@@ -200,10 +226,8 @@ int main()
     {
         return 1;
     }
-
     printf("Servidor iniciado na porta %d\n", PORT);
-
-    receiveConnection(serverFd, address, client, messageSender);
+    receiveConnection(serverFd, address, client, messageSender, readFds);
     free(client);
     free(messageSender);
     closesocket(serverFd);

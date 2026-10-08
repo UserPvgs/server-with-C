@@ -3,11 +3,11 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-typedef struct
-{
+typedef struct {
     SOCKET clientSocket;
     char name[120];
-    bool connect;
+    bool connected;
+    bool loggedIn;
 } Client;
 
 #endif

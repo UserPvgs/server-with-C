@@ -33,7 +33,8 @@ Commands CommandOfString(char buffer[8192])
 void broadcast(Client* clients, SOCKET sender, const char* message)
 {
     for(int i = 0; i < MAX_CLIENTS; i++){
-        if(clients[i].connect == true){
+        if(clients[i].loggedIn == true){
+            printf("Broadcast para cliente %d: %s",(int)clients[i].clientSocket,message);
             send(clients[i].clientSocket, message, strlen(message), 0);
         }
     }
@@ -41,23 +42,59 @@ void broadcast(Client* clients, SOCKET sender, const char* message)
 
 void accessChat(char buffer[8192], SOCKET clientFd, Client* client)
 {
-    for(int i = 0; i < MAX_CLIENTS; i++){
-        if(client[i].connect == false && client[i].clientSocket == clientFd){
-            client[i].connect = true;
-            char* argument = strchr(buffer, ' ') + 1;
-            strncpy(client[i].name,argument,sizeof(client[i].name) - 1);
-            client[i].name[sizeof(client[i].name) - 1] = '\0';
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if(client[i].connected && client[i].clientSocket == clientFd)
+        {
+            char* argument = strchr(buffer, ' ');
+            if(argument == NULL || argument[1] == '\0')
+            {
+                const char* errorMessage =
+                    "Invalid LOGIN\n";
+
+                send(
+                    clientFd,
+                    errorMessage,
+                    strlen(errorMessage),
+                    0
+                );
+
+                return;
+            }
+            argument++;
+            strncpy(
+                client[i].name,
+                argument,
+                sizeof(client[i].name) - 1
+            );
+            client[i].name[
+                sizeof(client[i].name) - 1
+            ] = '\0';
+            client[i].loggedIn = true;
+            const char* response =
+                "LOGIN OK\n";
+            send(
+                clientFd,
+                response,
+                strlen(response),
+                0
+            );
             return;
         }
     }
-    const char* errorMessage = "no more space to socket access login.";
-    send(clientFd, errorMessage, strlen(errorMessage), 0);
+    const char* errorMessage = "Socket not found\n";
+    send(
+        clientFd,
+        errorMessage,
+        strlen(errorMessage),
+        0
+    );
 }
 
 Client* findClient(Client* client, SOCKET clientFd)
 {
     for(int i = 0; i < MAX_CLIENTS; i++){
-        if(client[i].connect == true && client[i].clientSocket == clientFd){
+        if(client[i].connected == true && client[i].clientSocket == clientFd){
             return &client[i];
         }
     }
@@ -71,7 +108,7 @@ CommandsAndArguments parseCommand(char buffer[8192], SOCKET clientFd, Client* cl
     {
     case LOGIN:
     {
-            accessChat(buffer, clientFd, client);
+        accessChat(buffer, clientFd, client); 
         break;
     }
     case MESSAGE:
@@ -110,7 +147,8 @@ CommandsAndArguments parseCommand(char buffer[8192], SOCKET clientFd, Client* cl
         }
         closesocket(specificClient->clientSocket);
         specificClient->clientSocket = INVALID_SOCKET;
-        specificClient->connect = false;
+        specificClient->connected = false;
+        specificClient->loggedIn = false;
         specificClient->name[0] = '\0';
         break;
     case LIST:
@@ -134,65 +172,138 @@ CommandsAndArguments parseCommand(char buffer[8192], SOCKET clientFd, Client* cl
 
 int receiveConnection(SOCKET serverFd, struct sockaddr_in address, Client* client, Message* messageSender, fd_set readFds)
 {
-    SOCKET clientFd;
-    char buffer[8192];
+     char buffer[8192];
+
     while(1)
     {
         int addressLength = sizeof(address);
         FD_ZERO(&readFds);
         FD_SET(serverFd, &readFds);
-        //int serverSelect = select(0, &readFds, NULL, NULL, NULL);
-        for(int i = 0; i < MAX_CLIENTS; i++){
-            if(client[i].connect == true){
+        for(int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if(client[i].connected)
+            {
                 FD_SET(client[i].clientSocket, &readFds);
             }
         }
-        int resultSelect = select(0, &readFds, NULL, NULL, NULL);
-        if(resultSelect == SOCKET_ERROR){
-            printf("Erro no select -> %d\n", WSAGetLastError());
+        int resultSelect = select(
+            0,
+            &readFds,
+            NULL,
+            NULL,
+            NULL
+        );
+
+        if(resultSelect == SOCKET_ERROR)
+        {
+            printf(
+                "Erro no select -> %d\n",
+                WSAGetLastError()
+            );
+
             break;
         }
-        if(FD_ISSET(serverFd, &readFds)){
-            clientFd = accept(
-            serverFd,
-            (struct sockaddr*)&address,
-            &addressLength
+        if(FD_ISSET(serverFd, &readFds))
+        {
+            SOCKET clientFd = accept(
+                serverFd,
+                (struct sockaddr*)&address,
+                &addressLength
             );
-            if (clientFd == INVALID_SOCKET)
+
+            if(clientFd == INVALID_SOCKET)
             {
-                printf("Erro no accept -> %d\n",WSAGetLastError());
+                printf(
+                    "Erro no accept -> %d\n",
+                    WSAGetLastError()
+                );
+
                 continue;
             }
-        }
-        if(findClient(client, clientFd) == NULL){
-            for(int i = 0; i < MAX_CLIENTS; i++){
-                if(client[i].clientSocket == INVALID_SOCKET){
+            bool inserted = false;
+            for(int i = 0; i < MAX_CLIENTS; i++)
+            {
+                if(client[i].connected == false)
+                {
                     client[i].clientSocket = clientFd;
+                    client[i].connected = true;
+                    client[i].loggedIn = false;
+                    client[i].name[0] = '\0';
+
+                    inserted = true;
+
+                    printf(
+                        "Novo socket conectado: %llu\n",
+                        (unsigned long long)clientFd
+                    );
+
                     break;
                 }
             }
-        }
-        for(int i = 0; i < MAX_CLIENTS; i++){
-            if(FD_ISSET(client[i].clientSocket, &readFds)){
-                int bytesReceived = recv(
-                client[i].clientSocket,
-                buffer,
-                sizeof(buffer) - 1,
-                0
+            if(inserted == false)
+            {
+                const char* errorMessage =
+                    "Server full\n";
+
+                send(
+                    clientFd,
+                    errorMessage,
+                    strlen(errorMessage),
+                    0
                 );
 
-                if (bytesReceived <= 0)
+                closesocket(clientFd);
+            }
+        }
+        for(int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if(
+                client[i].connected &&
+                FD_ISSET(
+                    client[i].clientSocket,
+                    &readFds
+                )
+            )
+            {
+                int bytesReceived = recv(
+                    client[i].clientSocket,
+                    buffer,
+                    sizeof(buffer) - 1,
+                    0
+                );
+                if(bytesReceived <= 0)
                 {
                     closesocket(client[i].clientSocket);
+
+                    client[i].clientSocket = INVALID_SOCKET;
+                    client[i].connected = false;
+                    client[i].loggedIn = false;
+                    client[i].name[0] = '\0';
+
+                    printf(
+                        "Cliente desconectado\n"
+                    );
+
                     continue;
                 }
-                //Recv nesse estado impede a assincronicidade, adicionar multiplexação
+
                 buffer[bytesReceived] = '\0';
-                printf("%s\n", buffer);
-                CommandsAndArguments commandsAndArguments = parseCommand(buffer, client[i].clientSocket, client, messageSender);
+
+                printf(
+                    "Recebido: %s\n",
+                    buffer
+                );
+
+                parseCommand(
+                    buffer,
+                    client[i].clientSocket,
+                    client,
+                    messageSender
+                );
             }
         }
     }
+    return 0;
 }
 
 int main()
@@ -227,6 +338,14 @@ int main()
         return 1;
     }
     printf("Servidor iniciado na porta %d\n", PORT);
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        client[i].clientSocket = INVALID_SOCKET;
+        client[i].connected = false;
+        client[i].loggedIn = false;
+        client[i].name[0] = '\0';
+    }
+    
     receiveConnection(serverFd, address, client, messageSender, readFds);
     free(client);
     free(messageSender);
